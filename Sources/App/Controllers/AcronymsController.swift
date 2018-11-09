@@ -15,6 +15,7 @@ struct AcronymsController: RouteCollection {
         route.get("search", use: searchHandler)
         route.get("first", use: getFirstHandler)
         route.get("sorted", use: sortedHandler)
+        route.get(Acronym.parameter, "user", use: getUserHandler)
     }
 
     // MARK: - Private
@@ -39,6 +40,7 @@ struct AcronymsController: RouteCollection {
         ) { acronym, updated in
             acronym.short = updated.short ?? acronym.short
             acronym.long = updated.long ?? acronym.long
+            acronym.userID = updated.userID
             return acronym.save(on: req)
         }
     }
@@ -69,5 +71,13 @@ struct AcronymsController: RouteCollection {
 
     private func sortedHandler(_ req: Request) throws -> Future<[Acronym]> {
         return Acronym.query(on: req).sort(\.short, .ascending).all()
+    }
+
+    private func getUserHandler(_ req: Request) throws -> Future<User> {
+        return try req
+            .parameters.next(Acronym.self)
+            .flatMap(to: User.self) { acronym in
+                acronym.user.get(on: req)
+        }
     }
 }
