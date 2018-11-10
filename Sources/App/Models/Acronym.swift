@@ -24,12 +24,15 @@ extension Acronym: Migration {
             try addProperties(to: builder)
             builder.reference(from: \.userID, to: \User.id)
         }
-        
+
     }
 }
 
 extension Acronym {
     var user: Parent<Acronym, User> {
         return parent(\.userID)
+    }
+    var categories: Siblings<Acronym, Category, AcronymCategoryPivot> {
+        return siblings()
     }
 }
