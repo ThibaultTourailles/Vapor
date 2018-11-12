@@ -1,5 +1,6 @@
 import Vapor
 import Leaf
+import Fluent
 
 struct WebsiteController: RouteCollection {
 
@@ -11,7 +12,7 @@ struct WebsiteController: RouteCollection {
         router.get("categories", use: allCategoriesHandler)
         router.get("categories", Category.parameter, use: categoryHandler)
         router.get("acronyms", "create", use: createAcronymHandler)
-        router.post(Acronym.self, at: "acronyms", "create", use: createAcronymPostHandler)
+        router.post(CreateAcronymData.self, at: "acronyms", "create", use: createAcronymPostHandler)
         router.get("acronyms", Acronym.parameter, "edit", use: editAcronymHandler)
         router.post("acronyms", Acronym.parameter, "edit", use: editAcronymPostHandler)
         router.post("acronyms", Acronym.parameter, "delete", use: deleteAcronymHandler)
@@ -35,10 +36,12 @@ struct WebsiteController: RouteCollection {
                 return acronym.user
                     .get(on: req)
                     .flatMap(to: View.self) { user in
+                        let categories = try acronym.categories.query(on: req).all()
                         let context = AcronymContext(
                             title: acronym.short ?? "",
                             acronym: acronym,
-                            user: user
+                            user: user,
+                            categories: categories
                         )
                         return try req.view().render("acronym", context)
                 }
@@ -98,40 +101,82 @@ struct WebsiteController: RouteCollection {
             return try req.view().render("createAcronym", context)
     }
 
-    func createAcronymPostHandler(_ req: Request, acronym: Acronym) throws -> Future<Response> {
-        return acronym
-            .save(on: req)
-            .map(to: Response.self) { acronym in
-            guard let id = acronym.id else { throw Abort(.internalServerError) }
-            return req.redirect(to: "/acronyms/\(id)")
+    func createAcronymPostHandler(_ req: Request, data: CreateAcronymData) throws -> Future<Response> {
+        let acronym = Acronym(
+            short: data.short,
+            long: data.long,
+            userID: data.userID
+        )
+        return acronym.save(on: req)
+            .flatMap(to: Response.self) { acronym in
+                guard let id = acronym.id else { throw Abort(.internalServerError) }
+                var categorySaves: [Future<Void>] = []
+                for category in data.categories ?? [] {
+                    try categorySaves.append(Category.addCategory(category, to: acronym, on: req))
+                }
+                let redirect = req.redirect(to: "/acronyms/\(id)")
+                return categorySaves.flatten(on: req).transform(to: redirect)
         }
     }
 
     func editAcronymHandler(_ req: Request) throws -> Future<View> {
         return try req.parameters.next(Acronym.self)
             .flatMap(to: View.self) { acronym in
+                let users = User.query(on: req).all()
+                let categories = try acronym.categories.query(on: req).all()
                 let context = EditAcronymContext(
                     acronym: acronym,
-                    users: User.query(on: req).all()
+                    users: users,
+                    categories: categories
                 )
                 return try req.view().render("createAcronym", context)
         }
     }
 
     func editAcronymPostHandler(_ req: Request) throws -> Future<Response> {
-            return try flatMap(
-                to: Response.self,
-                req.parameters.next(Acronym.self),
-                req.content.decode(Acronym.self)
-            ) { acronym, data in
-                acronym.short = data.short
-                acronym.long = data.long
-                acronym.userID = data.userID
-                return acronym.save(on: req)
-                    .map(to: Response.self) { savedAcronym in
-                        guard let id = savedAcronym.id else { throw Abort(.internalServerError) }
-                        return req.redirect(to: "/acronyms/\(id)")
+        return try flatMap(
+            to: Response.self,
+            req.parameters.next(Acronym.self),
+            req.content
+                .decode(CreateAcronymData.self)
+        ) { acronym, data in
+            acronym.short = data.short
+            acronym.long = data.long
+            acronym.userID = data.userID
+            return acronym.save(on: req)
+                .flatMap(to: Response.self) { savedAcronym in
+                    guard let id = savedAcronym.id else { throw Abort(.internalServerError) }
+                    return try acronym.categories.query(on: req).all()
+                        .flatMap(to: Response.self) { existingCategories in
+                            let existingStringArray = existingCategories.map { $0.name }
+                            let existingSet = Set<String>(existingStringArray)
+                            let newSet = Set<String>(data.categories ?? [])
+                            let categoriesToAdd = newSet.subtracting(existingSet)
+                            let categoriesToRemove = existingSet.subtracting(newSet)
+                            var categoryResults: [Future<Void>] = []
+                            for newCategory in categoriesToAdd {
+                                categoryResults.append(
+                                    try Category.addCategory(
+                                        newCategory,
+                                        to: acronym,
+                                        on: req
+                                    )
+                                )
+                            }
+                            for categoryNameToRemove in categoriesToRemove {
+                                let categoryToRemove = existingCategories.first {
+                                    $0.name == categoryNameToRemove
+                                }
+                                if let category = categoryToRemove {
+                                    categoryResults.append(
+                                        acronym.categories.detach(category, on: req))
+                                }
+                            }
+                            return categoryResults
+                                .flatten(on: req)
+                                .transform(to: req.redirect(to: "/acronyms/\(id)"))
                     }
+            }
         }
     }
 
@@ -154,6 +199,7 @@ struct AcronymContext: Encodable {
     let title: String
     let acronym: Acronym
     let user: User
+    let categories: Future<[Category]>
 }
 
 struct UserContext: Encodable {
@@ -188,6 +234,14 @@ struct EditAcronymContext: Encodable {
     let acronym: Acronym
     let users: Future<[User]>
     let editing = true
+    let categories: Future<[Category]>
+}
+
+struct CreateAcronymData: Content {
+    let userID: User.ID
+    let short: String
+    let long: String
+    let categories: [String]?
 }
 
 extension Array {
