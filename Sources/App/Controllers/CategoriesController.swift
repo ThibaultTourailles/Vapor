@@ -11,10 +11,14 @@ struct CategoriesController: RouteCollection {
 
     func boot(router: Router) throws {
         let route = router.grouped("api", "categories")
-        route.post(Category.self, use: createHandler)
         route.get(use: getAllHandler)
         route.get(Category.parameter, use: getHandler)
         route.get(Category.parameter, "acronyms", use: getAcronymsHandler)
+
+        let tokenAuthMiddleware = User.tokenAuthMiddleware()
+        let guardAuthMiddleware = User.guardAuthMiddleware()
+        let protected = route.grouped(tokenAuthMiddleware, guardAuthMiddleware)
+        protected.post(Category.self, use: createHandler)
     }
 
     // MARK: - Private
